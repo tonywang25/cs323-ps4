@@ -1,0 +1,26 @@
+#!/bin/bash
+# pushd / popd
+# REQUIRES: BUILT-IN (cd, pushd, popd)
+
+ERROR="+Bash.err.$$"
+
+FILES="$ERROR"
+PROGS="echo pwd sleep true"
+/c/cs323/bin/Exist $FILES && exit
+
+RUN="/c/cs323/bin/run -wall=2"
+trap "/bin/rm -f $FILES; \
+      /usr/bin/killall -q -u $USER Bash $PROGS 2>/dev/null" 0 1 2 3 9 15
+ulimit -u 1000
+
+################
+
+$RUN HOME=/c/cs323 ./Bash <<\END
+ cd /
+ pushd c
+ pushd cs323
+ pushd proj4
+ echo End of test
+END
+
+echo

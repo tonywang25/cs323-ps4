@@ -1,0 +1,23 @@
+#!/bin/bash
+# Redirect stdin to here document
+# REQUIRES: HERE
+
+FILES=
+PROGS="echo wc"
+/c/cs323/bin/Exist $FILES && exit
+
+RUN="/c/cs323/bin/run -wall=2"
+trap "/bin/rm -f $FILES; \
+      /usr/bin/killall -q -u $USER Bash $PROGS 2>/dev/null" 0 1 2 3 9 15
+ulimit -u 1000
+
+################
+
+(/bin/echo "wc <<HERE" ;           \
+ /bin/cat  /c/cs323/Doc/logic.1 ;  \
+ /bin/echo "HERE" ;                \
+ /bin/echo "echo End of test") |   \
+$RUN ./Bash                    |   \
+/usr/bin/perl -p -e 's{ +}{ }g'         # Collapse multiple blanks from wc
+
+echo

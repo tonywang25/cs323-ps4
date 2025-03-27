@@ -1,0 +1,60 @@
+#!/usr/bin/perl
+#
+#     maxProc [-debug] LIMIT TRACE
+#
+# Write a message to stderr if the number of running and zombie processes
+# ever exceeds LIMIT while running a program.  With -debug flag print to
+# stderr the maximum number of such processes and all clone and wait4 system
+# calls.
+#
+# To use maxProc, first run a PROGRAM as follows:
+#
+#   strace -f -D -e trace=clone,wait4 -o TRACE PROGRAM
+#
+# where TRACE is the name of the trace file.  Then run maxProc as follows:
+#
+#     maxProc [-debug] LIMIT TRACE
+
+my $debug = 0;
+if ($ARGV[0] eq "-debug") {
+   $debug = shift;
+}
+
+(@ARGV == 2)
+   || die ("maxProc [-debug] LIMIT TRACE\n");
+my $limit = shift;
+($limit > 0)
+   || die ("maxProc: LIMIT must be positive\n");
+my $trace = shift;
+
+open (TRACE, "< $trace")
+   || die ("cannot open $trace\n");
+
+my $maxActive = 0;
+my $nActive = 0;
+my %Active;
+while (<TRACE>) {
+   next
+      unless (m{(clone|wait4).* = (\d+)$});
+   print $_
+      if ($debug);
+   my ($type, $pid) = ($1, $2);
+   if ($type eq "clone") {
+      $Active{$pid}++;
+      $nActive++;
+      $maxActive++
+	 if ($nActive > $maxActive);
+
+   } elsif ($pid > 0) {
+      $nActive--
+	 if (exists $Active{$pid});
+      delete $Active{$pid};
+   }
+
+}
+
+print STDERR "Maximum #processes = $maxActive > $limit = limit\n"
+   if ($maxActive > $limit);
+
+print STDERR "Maximum #processes = $maxActive\n"
+   if ($debug);

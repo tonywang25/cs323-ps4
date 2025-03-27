@@ -1,0 +1,59 @@
+#!/bin/bash
+# Nonexistent / unreadable / unwritable files (ERROR)
+# REQUIRES: REDIR (<, >)
+
+ERROR="+Bash.err.$$"
+
+FILES="$ERROR"
+PROGS="echo stderr wc"
+/c/cs323/bin/Exist $FILES && exit
+
+RUN="/c/cs323/bin/run -wall=2"
+trap "/bin/rm -f $FILES; \
+      /usr/bin/killall -q -u $USER -s KILL Bash $PROGS 2>/dev/null" 0 1 2 3 9 15
+ulimit -u 1000
+
+################
+
+# Nonexistent command (error)
+$RUN ./Bash <<\END 2>$ERROR
+  Nonexistent commands can not be executed
+  echo End of test
+END
+echo ; echo ----- ; /usr/bin/wc -l < $ERROR
+
+echo =====
+
+# Nonexecutable command (error)
+$RUN ./Bash <<\END 2>$ERROR
+  /bin is a file that exists but is not executable
+  echo End of test
+END
+echo ; echo ----- ; /usr/bin/wc -l < $ERROR
+
+echo =====
+
+# Nonexistent file (error)
+$RUN ./Bash <<\END 2>$ERROR
+  /usr/bin/wc < /nonexistent
+  echo End of test
+END
+echo ; echo ----- ; /usr/bin/wc -l < $ERROR
+
+echo =====
+
+# Unreadable file (error)
+$RUN ./Bash <<\END 2>$ERROR
+  /usr/bin/wc < /lost+found
+  echo End of test
+END
+echo ; echo ----- ; /usr/bin/wc -l < $ERROR
+
+echo =====
+
+# Unwritable file (error)
+$RUN ./Bash <<\END 2>$ERROR
+  echo error > /nonexistent
+  echo End of test
+END
+echo ; echo ----- ; /usr/bin/wc -l < $ERROR

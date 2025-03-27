@@ -1,0 +1,33 @@
+#!/usr/bin/perl
+#
+#   suppress [-number] file
+#
+# Normalize Backgrounded and Completed messages.
+# With -number flag, renumber pids rather than normalize them.
+
+$npid = 1;
+
+if ($ARGV[0] eq "-number") {
+   $number = shift;
+}
+
+
+while (<>) {
+   if ($number) {
+      m{^(Backgrounded|Completed): (\d+)};
+      ($type, $pid) = ($1, $2);
+      if ($type eq "Backgrounded" && ! exists $pid{$pid}) {
+	 s{$pid}{$npid};
+	 $pid{$pid} = $npid++;
+      } elsif ($type eq "Completed" && exists $pid{$pid}) {
+	 s[$pid][$pid{$pid}];
+	 delete $pid{$pid};
+      }
+
+   } else {
+      s{^(Backgrounded: )\d+}{$1XXXX};
+      s{^(Completed: )\d+}{$1XXXX};
+   }
+
+   print $_;
+}

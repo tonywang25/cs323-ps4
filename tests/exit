@@ -1,0 +1,8 @@
+#!/bin/bash
+#
+#   exit STATUS [DELAY]
+#
+# exit with STATUS after sleeping DELAY seconds (default 0)
+
+sleep ${2-0}
+exit $1

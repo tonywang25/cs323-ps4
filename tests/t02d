@@ -1,0 +1,47 @@
+#!/bin/bash
+# Check for use of waitpid(pid,...) by simple command
+# REQUIRES: Various
+
+ERROR="+Bash.err.$$"
+
+FILES="$ERROR"
+PROGS="cat die echo false printenv pwd sleep sleeper tail true wc"
+/c/cs323/bin/Exist $FILES && exit
+
+RUN="/c/cs323/bin/run -wall=4"
+trap "/bin/rm -f $FILES; \
+      /usr/bin/killall -q -u $USER -s KILL Bash $PROGS 2>/dev/null" 0 1 2 3 9 15
+ulimit -u 1000
+
+TESTS=/c/cs323/proj4/tests
+
+################
+
+$RUN $TESTS/noWaitpid ./Bash <<\END 2>$ERROR
+  A=aardvark B=bluebird C=cardinal /usr/bin/printenv A B C
+
+  cd /c/cs323/Doc
+  /bin/pwd
+
+  cat /c/cs323/Doc/logic.1 | cat -e | cat -e | cat -e | tail -10
+
+  /usr/bin/true  && ls -1 /c/cs323/Style/C-IH
+  /usr/bin/false && ls -1 /c/cs323/Style/C-IH
+  /usr/bin/true  || ls -1 /c/cs323/Style/C-IH
+  /usr/bin/false || ls -1 /c/cs323/Style/C-IH
+
+  echo Garbage In, ; echo Garbage Out!
+
+  echo As simple as
+  /c/cs323/proj4/tests/sleeper alpha 0.4 gamma & sleep 0.2
+  echo beta
+  /usr/bin/sleep 0.4
+
+  ( echo vvvvvvvv ; cat ; echo ^^^^^^^^ ) < /c/cs323/proj4/tests/stk.txt
+
+  echo End of test
+END
+
+echo
+
+/c/cs323/proj4/tests/suppress $ERROR

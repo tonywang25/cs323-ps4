@@ -1,0 +1,21 @@
+#!/bin/bash
+# Redirect stdin to group of simple commands
+# REQUIRES: REDIR (<), SEP (;), SUBCMD
+
+FILES=
+PROGS="cat echo"
+/c/cs323/bin/Exist $FILES && exit
+
+RUN="/c/cs323/bin/run -wall=2"
+trap "/bin/rm -f $FILES; \
+      /usr/bin/killall -q -u $USER Bash $PROGS 2>/dev/null" 0 1 2 3 9 15
+ulimit -u 1000
+
+################
+
+$RUN ./Bash <<\END
+  ( echo vvvvvvvv ; cat ; echo ^^^^^^^^ ) < /c/cs323/proj4/tests/stk.txt
+  echo End of test
+END
+
+echo

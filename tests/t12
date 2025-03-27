@@ -1,0 +1,55 @@
+#!/bin/bash
+# Errors
+#   cd  [HOME undefined] (error)
+#   cd nonexistent (error)
+# REQUIRES: BUILT-IN (cd)
+
+ERROR="+Bash.err.$$"
+
+FILES="$ERROR"
+PROGS="echo pwd sleep true"
+/c/cs323/bin/Exist $FILES && exit
+
+RUN="/c/cs323/bin/run -wall=2"
+trap "/bin/rm -f $FILES; \
+      /usr/bin/killall -q -u $USER Bash $PROGS 2>/dev/null" 0 1 2 3 9 15
+ulimit -u 1000
+
+################
+
+# cd  [HOME undefined] (error)
+$RUN -unsetenv=HOME ./Bash <<\END 2>$ERROR
+  cd /c/cs323                   # Ensure that cd is implemented
+  cd
+  /bin/pwd
+  echo End of test
+END
+echo
+echo -----
+wc -l < $ERROR
+
+echo =====
+
+# cd nonexistent (error)
+$RUN ./Bash <<\END 2>$ERROR
+  cd /c/cs323
+  cd nonexistent
+  /bin/pwd
+  echo End of test
+END
+echo
+echo -----
+wc -l < $ERROR
+
+echo =====
+
+# cd two arguments (error)
+$RUN ./Bash <<\END 2>$ERROR
+  cd /c/cs323
+  cd / second-argument
+  /bin/pwd
+  echo End of test
+END
+echo
+echo -----
+wc -l < $ERROR

@@ -1,0 +1,27 @@
+#!/bin/bash
+# cd directoryName / cd
+# REQUIRES: BUILT-IN (cd)
+
+FILES=
+PROGS="echo pwd"
+/c/cs323/bin/Exist $FILES && exit
+
+RUN="/c/cs323/bin/run -wall=2"
+trap "/bin/rm -f $FILES; \
+      /usr/bin/killall -q -u $USER Bash $PROGS 2>/dev/null" 0 1 2 3 9 15
+ulimit -u 1000
+
+################
+
+$RUN HOME=/c/cs323 ./Bash <<\END
+  # cd directoryName
+  cd /c/cs323/Doc
+  /bin/pwd
+   
+  # cd
+  cd
+  /bin/pwd
+  echo End of test
+END
+
+echo

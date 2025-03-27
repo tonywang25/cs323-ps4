@@ -1,0 +1,18 @@
+#!/bin/bash
+#
+#    reachable COMMAND
+#
+# Use valgrind to determine how much memory COMMAND has lost on exit.
+# If none, write 1 to stderr, else write summary.
+
+LOG="/tmp/+valgrind.LOG.$$"
+trap '/bin/rm -f $LOG' 0 1 2 3 9 15
+
+# Run command under valgrind
+/usr/bin/valgrind --leak-check=summary --child-silent-after-fork=yes \
+		  --log-file=$LOG $*
+
+# Count #lines with "definitely lost: 0 bytes" or "at exit: 0 bytes";
+#   if none, print all lines with "definitely lost:" or "at exit:"
+(/usr/bin/egrep -c "(definitely lost|at exit): 0 bytes" $LOG \
+ || /usr/bin/egrep "(definitely lost|at exit):" $LOG) >&2

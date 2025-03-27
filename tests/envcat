@@ -1,0 +1,8 @@
+#!/bin/bash
+#
+#     envcat [NAME]*
+#
+#  Call /usr/bin/printenv [NAME]* followed by cat -e
+
+/usr/bin/printenv $*
+cat -e

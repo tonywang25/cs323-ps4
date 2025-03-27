@@ -1,0 +1,23 @@
+#!/bin/bash
+# Simple pipe
+# REQUIRES: PIPE, REDIR (<, >)
+
+FILES="+Bash.tmp"
+PROGS="die cat echo fmt wc"
+/c/cs323/bin/Exist $FILES && exit
+
+RUN="/c/cs323/bin/run -wall=2"
+trap "/bin/rm -f $FILES; \
+      /usr/bin/killall -q -u $USER Bash $PROGS 2>/dev/null" 0 1 2 3 9 15
+ulimit -u 1000
+
+################
+
+$RUN ./Bash <<\END
+  /c/cs323/proj4/tests/die 1 cat < /c/cs323/proj4/tests/stk.txt | /usr/bin/fmt -48
+  /c/cs323/proj4/tests/die 1 cat < /c/cs323/Style/C-IH | wc -l > +Bash.tmp
+  cat +Bash.tmp
+  echo End of test
+END
+
+echo

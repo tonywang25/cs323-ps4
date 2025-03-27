@@ -1,0 +1,22 @@
+#!/bin/bash
+# Check for use of waitpid(pid,...) by simple command
+# REQUIRES:
+
+FILES=
+PROGS="echo"
+/c/cs323/bin/Exist $FILES && exit
+
+RUN="/c/cs323/bin/run -wall=2"
+trap "/bin/rm -f $FILES; \
+      /usr/bin/killall -q -u $USER Bash $PROGS 2>/dev/null" 0 1 2 3 9 15
+ulimit -u 1000
+
+TESTS=/c/cs323/proj4/tests
+
+################
+
+$RUN $TESTS/noWaitpid ./Bash <<\END
+  echo End of test
+END
+
+echo

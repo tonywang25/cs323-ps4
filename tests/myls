@@ -1,0 +1,17 @@
+#!/usr/bin/perl
+#
+#     myls [directory]*
+#
+#  List file in the specified directories that belong to me.
+
+$ENV{"LC_ALL"} = "C";
+
+$me = `whoami`;
+@file = `/bin/ls -lA @ARGV | grep $me`;
+
+for (@file) {
+   @fields = split;
+   $file = pop(@fields);
+   print "$file\n"
+      unless $file =~ m{^.nfs};
+}

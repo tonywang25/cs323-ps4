@@ -1,0 +1,37 @@
+#!/bin/bash
+#
+#     noWaitpid [-debug] COMMAND
+#
+# Run COMMAND and write a message to stderr if the process or any child process
+# executing it calls waitpid() to wait for a particular process to die.  With
+# the -debug option all strace entries involving wait4() are written to stderr.
+
+STDERR=noWaitpid.stderr.$$
+WAIT4=noWaitpid.wait4.$$
+
+trap "/bin/rm -f $STDERR $WAIT4 ; \
+      /usr/bin/killall -q -u $USER Bash 2>/dev/null" 0 1 2 3 9 15
+
+if test "$1" = "-debug" ; then
+   DEBUG=true
+   shift
+fi
+
+if test ! -x "$1" ; then
+   echo 1>&2 "noWaitpid: invalid command: $*"
+   exit
+fi
+
+strace -f -D -e trace=wait4 -o $STDERR $*
+
+grep '^[0-9]* *wait4[(][0-9]*,' $STDERR > $WAIT4
+
+if test -s $WAIT4 ; then
+   echo 1>&2 "noWaitpid: waitpid(pid,...) used by: $*"
+   cat $WAIT4
+   exit
+fi
+
+if test -n "$DEBUG" ; then
+   grep 1>&2 "wait4[(]" $STDERR
+fi

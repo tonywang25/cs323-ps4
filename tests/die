@@ -1,0 +1,12 @@
+#!/usr/bin/perl
+#
+#     die time command
+#
+#  Fork a child that executes COMMAND after setting an alarm for TIME seconds.
+
+unless ($pid = fork) {
+  alarm (shift @ARGV);
+# print STDERR "@ARGV\n";
+  exec "@ARGV";
+}
+waitpid ($pid, 0);

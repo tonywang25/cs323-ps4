@@ -1,0 +1,21 @@
+#!/bin/bash
+# Multiple commands separated by ;
+# REQUIRES: SEP (;)
+
+FILES=
+PROGS="echo"
+/c/cs323/bin/Exist $FILES && exit
+
+RUN="/c/cs323/bin/run -wall=2"
+trap "/bin/rm -f $FILES; \
+      /usr/bin/killall -q -u $USER Bash $PROGS 2>/dev/null" 0 1 2 3 9 15
+ulimit -u 1000
+
+################
+
+$RUN ./Bash <<\END
+  echo Garbage In, ; echo Garbage Out!
+  echo End of test
+END
+
+echo

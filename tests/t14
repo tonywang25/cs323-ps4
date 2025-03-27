@@ -1,0 +1,26 @@
+#!/bin/bash
+# Simple cases of $?
+# REQUIRES: STATUS
+
+FILES=
+PROGS="echo false printenv true"
+/c/cs323/bin/Exist $FILES && exit
+
+RUN="/c/cs323/bin/run -wall=2"
+trap "/bin/rm -f $FILES; \
+      /usr/bin/killall -q -u $USER Bash $PROGS 2>/dev/null" 0 1 2 3 9 15
+ulimit -u 1000
+
+################
+
+$RUN ./Bash <<\END
+  echo In Bash, true =
+  /usr/bin/true
+  /usr/bin/printenv ?
+  echo but false =
+  /usr/bin/false
+  /usr/bin/printenv ?
+  echo End of test
+END
+
+echo
