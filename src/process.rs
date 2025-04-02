@@ -28,6 +28,9 @@ fn handle_all(_cmdList: &Arc<CMD>) -> u32 {
         x if x == Type::PIPE as u32 => {
             handle_pipe(&_cmdList) as u32
         },
+        x if x == Type::SEP_AND as u32 || x == Type::SEP_OR as u32 => {
+            handle_cond(&_cmdList) as u32
+        }
         _ => 0
     };
     let name_cstr = string2CStr("?");
@@ -352,7 +355,7 @@ pub fn handle_pipe(_cmdList: &Arc<CMD>) -> i32 {
             Err(_) => ()
         }
     }
-
+    // RETURN RIGHTMOST STATUS
     for i in (0..cmdVec.len()).rev() {
         match table[i].status {
             WaitStatus::Exited(_, status) if status != 0 => {
@@ -362,4 +365,35 @@ pub fn handle_pipe(_cmdList: &Arc<CMD>) -> i32 {
         }
     }
     0
+}
+
+fn handle_cond(_cmdList: &Arc<CMD>) -> u32 {
+    if let Some(left) = _cmdList.left.as_ref() {
+        let left_status = handle_all(&left);
+        match _cmdList.node {
+            x if x == Type::SEP_AND as u32 => {
+                if left_status != 0 {
+                    return left_status;
+                }
+                if let Some(right) = _cmdList.right.as_ref() {
+                    return handle_all(&right);
+                } else {
+                    return 1;
+                }
+            },
+            x if x == Type::SEP_OR as u32 => {
+                if left_status == 0 {
+                    return left_status;
+                }
+                if let Some(right) = _cmdList.right.as_ref() {
+                    return handle_all(&right);
+                } else {
+                    return 1;
+                }
+            },
+            _ => 1
+        }
+    } else {
+        1
+    }
 }
