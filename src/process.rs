@@ -1,13 +1,10 @@
 use std::ffi::{c_void, CString};
-use nix::errno::{errno, Errno};
-use nix::fcntl::{open, OFlag};
-use nix::sys::stat::Mode;
+use nix::errno::Errno;
 use std::os::raw::c_char;
-use std::path::Path;
 use crate::*;
 use libc::{unlink, EXIT_FAILURE, O_APPEND, O_CREAT, O_RDONLY, O_TRUNC, O_WRONLY, STDIN_FILENO, STDOUT_FILENO};
-use nix::sys::wait::{self, WaitStatus};
-use nix::unistd::{fork, execvp, pipe, getpid, Pid, ForkResult};
+use nix::sys::wait::{self, WaitPidFlag, WaitStatus};
+use nix::unistd::{fork, execvp, pipe, Pid, ForkResult};
 
 #[derive(Clone)]
 struct Entry {
@@ -15,12 +12,24 @@ struct Entry {
     status: WaitStatus,
 }
 
+static NON_AND_OR : [u32; 2] = [
+    Type::SEP_BG as u32,
+    Type::SEP_END as u32,
+];
+
 // use crate::syscall::*;
 pub fn r_process(_cmdList: Arc<CMD>) -> u32 {
-    return handle_all(&_cmdList);
+    let exit_status = handle_any(&_cmdList);
+    match wait::waitpid(Pid::from_raw(-1), Some(WaitPidFlag::WNOHANG)) {
+        Ok(WaitStatus::Exited(pid, status)) => {
+            eprintln!("Completed: {} ({})", pid, status);
+        },
+        _ => {}
+    }
+    return exit_status;
 }
 
-fn handle_all(_cmdList: &Arc<CMD>) -> u32 {
+fn handle_any(_cmdList: &Arc<CMD>) -> u32 {
     let exit_status = match _cmdList.node {
         x if x == Type::SIMPLE as u32 => {
             handle_simple(&_cmdList) as u32
@@ -30,7 +39,10 @@ fn handle_all(_cmdList: &Arc<CMD>) -> u32 {
         },
         x if x == Type::SEP_AND as u32 || x == Type::SEP_OR as u32 => {
             handle_cond(&_cmdList) as u32
-        }
+        },
+        x if x == Type::SEP_BG as u32 => {
+            handle_bg(&_cmdList) as u32
+        },
         _ => 0
     };
     let name_cstr = string2CStr("?");
@@ -212,16 +224,16 @@ pub fn handle_redirection(_cmdList: &Arc<CMD>) -> Result<(), Errno> {
 }
 
 // recursive
-pub fn create_cmd_array(_cmdList: &Arc<CMD>, cmdVec: &mut Vec<Arc<CMD>>) -> () {
+fn create_pipe_cmd_array(_cmdList: &Arc<CMD>, cmdVec: &mut Vec<Arc<CMD>>) -> () {
     if _cmdList.node == Type::SIMPLE as u32 {
         let cmdListClone = _cmdList.clone();
         cmdVec.push(cmdListClone);
     } else {
         if let Some(left) = _cmdList.left.as_ref() {
-            create_cmd_array(left, cmdVec);
+            create_pipe_cmd_array(left, cmdVec);
         }
         if let Some(right) = _cmdList.right.as_ref() {
-            create_cmd_array(right, cmdVec);
+            create_pipe_cmd_array(right, cmdVec);
         }
     }
 }
@@ -253,7 +265,7 @@ fn dup2_safe_pipe(source: i32, target: i32) -> () {
 pub fn handle_pipe(_cmdList: &Arc<CMD>) -> i32 {
     let mut cmdVec: Vec<Arc<CMD>> = Vec::new();
     
-    create_cmd_array(&_cmdList, &mut cmdVec);
+    create_pipe_cmd_array(&_cmdList, &mut cmdVec);
     
     let mut table: Vec<Entry> = vec![Entry {pid: Pid::from_raw(0), status: WaitStatus::StillAlive}; cmdVec.len()];
     let mut fdin = 0;
@@ -369,14 +381,14 @@ pub fn handle_pipe(_cmdList: &Arc<CMD>) -> i32 {
 
 fn handle_cond(_cmdList: &Arc<CMD>) -> u32 {
     if let Some(left) = _cmdList.left.as_ref() {
-        let left_status = handle_all(&left);
+        let left_status = handle_any(&left);
         match _cmdList.node {
             x if x == Type::SEP_AND as u32 => {
                 if left_status != 0 {
                     return left_status;
                 }
                 if let Some(right) = _cmdList.right.as_ref() {
-                    return handle_all(&right);
+                    return handle_any(&right);
                 } else {
                     return 1;
                 }
@@ -386,7 +398,7 @@ fn handle_cond(_cmdList: &Arc<CMD>) -> u32 {
                     return left_status;
                 }
                 if let Some(right) = _cmdList.right.as_ref() {
-                    return handle_all(&right);
+                    return handle_any(&right);
                 } else {
                     return 1;
                 }
@@ -396,4 +408,62 @@ fn handle_cond(_cmdList: &Arc<CMD>) -> u32 {
     } else {
         1
     }
+}
+
+
+// recursive
+fn create_bg_cmd_arrays(_cmdList: &Arc<CMD>, bgVec: &mut Vec<bool>, cmdVec: &mut Vec<Arc<CMD>>) -> () {
+    if let Some(left) = _cmdList.left.as_ref() {
+        create_bg_cmd_arrays(left, bgVec, cmdVec);
+    }
+    // if sep_bg "&" AND the length of the vectors are more than 0
+    if _cmdList.node == Type::SEP_BG as u32 && bgVec.len() > 0 {
+        // set the previous bg value to true
+        let prev_i = bgVec.len() - 1;
+        bgVec[prev_i] = true;
+    }
+    // 
+    if _cmdList.node != Type::SEP_BG as u32 && _cmdList.node != Type::SEP_END as u32 {
+        let cmdListClone = _cmdList.clone();
+        cmdVec.push(cmdListClone);
+        bgVec.push(false);
+    }
+    if let Some(right) = _cmdList.right.as_ref() {
+        create_bg_cmd_arrays(right, bgVec, cmdVec);
+    }
+}
+
+fn background(_cmdList: &Arc<CMD>) {
+    match unsafe { fork() } {
+        Ok(ForkResult::Parent { child, .. }) => {
+            eprintln!("Backgrounded: {}", child);
+        }
+        Ok(ForkResult::Child) => {
+            handle_any(&_cmdList);
+            unsafe { libc::_exit(0)};
+        }
+        Err(_) => {
+        }
+    }
+}
+
+fn handle_bg(_cmdList: &Arc<CMD>) -> u32 {
+    let mut bgVec: Vec<bool> = Vec::new();
+    let mut cmdVec: Vec<Arc<CMD>> = Vec::new();
+    create_bg_cmd_arrays(&_cmdList, &mut bgVec, &mut cmdVec);
+    // println!("Background Vector: {:?}", bgVec);
+    // print!("Command Vector: [");
+    // for cmd in cmdVec.iter() {
+    //     print!("{:?}, ", cmd.node);
+    // }
+    // println!("]");
+
+    for i in 0..bgVec.len() {
+        if bgVec[i] == true {
+            background(&cmdVec[i]);
+        } else {
+            handle_any(&cmdVec[i]);
+        }
+    }
+    0
 }
