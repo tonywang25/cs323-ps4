@@ -1,10 +1,20 @@
+use std::env::current_dir;
 use std::ffi::{c_void, CString};
+use std::path::PathBuf;
+use std::sync::Mutex;
 use nix::errno::Errno;
 use std::os::raw::c_char;
 use crate::*;
-use libc::{unlink, EXIT_FAILURE, O_APPEND, O_CREAT, O_RDONLY, O_TRUNC, O_WRONLY, STDIN_FILENO, STDOUT_FILENO};
+use libc::{ setenv, unlink, EXIT_FAILURE, O_APPEND, O_CREAT, O_RDONLY, O_TRUNC, O_WRONLY, STDIN_FILENO, STDOUT_FILENO};
 use nix::sys::wait::{self, WaitPidFlag, WaitStatus};
-use nix::unistd::{fork, execvp, pipe, Pid, ForkResult};
+use nix::unistd::{chdir, fork, execvp, pipe, Pid, ForkResult};
+
+use thread_local::ThreadLocal;
+use std::cell::RefCell;
+
+thread_local! {
+    static DIR_STACK: RefCell<Vec<PathBuf>> = RefCell::new(Vec::new());
+}
 
 #[derive(Clone)]
 struct Entry {
@@ -12,6 +22,15 @@ struct Entry {
     status: WaitStatus,
 }
 
+struct Shell {
+    dir_stack: Vec<String>,
+}
+
+static BUILT_INS: [&str; 3] = [
+    "pushd",
+    "popd",
+    "cd",
+];
 
 // use crate::syscall::*;
 pub fn r_process(_cmdList: Arc<CMD>) -> u32 {
@@ -49,7 +68,7 @@ fn handle_any(_cmdList: &Arc<CMD>) -> u32 {
     };
     let name_cstr = string2CStr("?");
     let val_cstr = string2CStr(exit_status.to_string().as_str());
-    unsafe { libc::setenv(name_cstr.as_ptr(), val_cstr.as_ptr(), 1); }
+    unsafe { setenv(name_cstr.as_ptr(), val_cstr.as_ptr(), 1); }
     return exit_status;
 }
 
@@ -87,7 +106,7 @@ fn handle_locals(_cmdList: &Arc<CMD>) -> Result<(), Errno>  {
         let name_cstr = string2CStr(name);
         let val_cstr = string2CStr(val);
         unsafe {
-            if libc::setenv(name_cstr.as_ptr(), val_cstr.as_ptr(), 1) < 0 {
+            if setenv(name_cstr.as_ptr(), val_cstr.as_ptr(), 1) < 0 {
                 return Err(Errno::last());
             }
         }
@@ -95,27 +114,133 @@ fn handle_locals(_cmdList: &Arc<CMD>) -> Result<(), Errno>  {
     Ok(())
 }
 
-fn process_simple(_cmdList: &Arc<CMD>) -> Result<(), Errno> {
-    // 1. Handle Locals
-    handle_locals(&_cmdList)?;
-    // 2. prepare program and args
-    let (program, args) = get_program_and_args(&_cmdList);
-    // 3. Handle redirection (if necessary)
-    handle_redirection(&_cmdList)?;
-    // 4. EXECVP CALL
-    match execvp(&program, &args) {
+fn cd_dir_name(dirName: &PathBuf) -> Result<(), Errno> {
+    match chdir(dirName) {
         Ok(_) => (),
         Err(_) => {
-            unsafe { 
-                libc::perror(std::ffi::CString::new("Execvp failed").unwrap().as_ptr());
-                libc::_exit(Errno::last() as i32);
+            unsafe {
+                libc::perror(std::ffi::CString::new("chdir failed").unwrap().as_ptr());
+                return Err(Errno::last());
             }
         }
     }
     Ok(())
 }
+fn process_cd(_cmdList: &Arc<CMD>) -> u32 {
+    match _cmdList.argv.len() {
+        // "cd"
+        1 => {
+            let key = "HOME";
+            match std::env::var(key) {
+                Ok(path) => {
+                    // println!("path: {}", path);
+                    match chdir(PathBuf::from(path).as_path()) {
+                        Ok(_) => 0,
+                        Err(_) => {
+                            unsafe {
+                                libc::perror(std::ffi::CString::new("chdir failed").unwrap().as_ptr());
+                            }
+                            return Errno::last() as u32;
+                        }
+                    }
+                },
+                Err(_) => {
+                    unsafe {
+                        libc::perror(std::ffi::CString::new("undefined").unwrap().as_ptr());
+                    }
+                    1
+                }
+            }
+        },
+        // "cd [dir]"
+        2 => {
+            if let Some(dir) = _cmdList.argv[1].as_ref() { 
+                if let Err(e) = cd_dir_name(&PathBuf::from(dir)) {
+                    return e as u32;
+                };
+            }
+            return 1;
+        },
+        _ => {
+            unsafe {
+                libc::perror(std::ffi::CString::new("too many argument").unwrap().as_ptr());
+            }
+            return 1;
+        }
+    }
+}
 
-pub fn handle_simple(_cmdList: &Arc<CMD>) -> u32 {
+fn process_pushd(_cmdList: &Arc<CMD>) -> u32 {
+    if _cmdList.argc != 2 {
+        return 1;
+    } else {
+        if let Some(dirName) = _cmdList.argv[1].as_ref() {
+            // get current directory
+            let currDir = match current_dir() {
+                Ok(path) => path,
+                Err(_) => return Errno::last() as u32
+            };
+            // push curr dir to dir stack
+            DIR_STACK.with(|stack| {
+                // clone to avoid borrowing
+                stack.borrow_mut().push(currDir.clone());
+            });
+            // cd to dirName
+            if let Err(e) = cd_dir_name(&PathBuf::from(dirName)){
+                return e as u32;
+            };
+            // print
+            println!("{}", currDir.display());
+            DIR_STACK.with(|stack| {
+                for dir in stack.borrow_mut().iter() {
+                    println!("{} ", dir.display());
+                }
+            });
+        } else {
+            return Errno::EINVAL as u32;
+        }
+    }
+    0
+}
+
+fn process_popd(_cmdList: &Arc<CMD>) -> u32 {
+    if _cmdList.argc != 2 {
+        return 1;
+    } else {
+         // pdir is None if stack is empty
+        let pdir = DIR_STACK.with(|stack| {
+            stack.borrow_mut().pop()
+        });
+        if let Some(dir) = pdir {
+            if let Err(e) = cd_dir_name(&dir) {
+                return e as u32;
+            };
+        }
+        0
+    }
+}
+
+fn exec_simple(_cmdList: &Arc<CMD>) -> Result<(), Errno> {
+     // 1. Handle Locals
+     handle_locals(&_cmdList)?;
+     // 2. prepare program and args
+     let (program, args) = get_program_and_args(&_cmdList);
+     // 3. Handle redirection (if necessary)
+     handle_redirection(&_cmdList)?;
+     // 4. EXECVP CALL
+     match execvp(&program, &args) {
+         Ok(_) => (),
+         Err(_) => {
+             unsafe { 
+                 libc::perror(std::ffi::CString::new("Execvp failed").unwrap().as_ptr());
+                 libc::_exit(Errno::last() as i32);
+             }
+         }
+     }
+     Ok(())
+}
+
+fn process_simple(_cmdList: &Arc<CMD>) -> u32 {
     match unsafe{fork()} {
         Ok(ForkResult::Parent { child, .. }) => {
             let status = wait::waitpid(child, None).unwrap();
@@ -128,7 +253,7 @@ pub fn handle_simple(_cmdList: &Arc<CMD>) -> u32 {
         },
         Ok(ForkResult::Child) => {
             // return propagated error in setup phase first
-            if let Err(e) = process_simple(_cmdList) {
+            if let Err(e) = exec_simple(_cmdList) {
                 return e as u32;
             // if no propagated error, move on to parent handling
             } else {
@@ -141,6 +266,28 @@ pub fn handle_simple(_cmdList: &Arc<CMD>) -> u32 {
                 libc::_exit(EXIT_FAILURE);
             }
         },
+    }
+}
+
+fn process_built_in_simple(_cmdList: &Arc<CMD>, cmd: &str) -> u32 {
+    match cmd {
+        "cd" => return process_cd(_cmdList),
+        "pushd" => return process_pushd(_cmdList),
+        "popd" => return process_popd(_cmdList),
+        _ => 1
+    }
+}
+
+pub fn handle_simple(_cmdList: &Arc<CMD>) -> u32 {
+    if let Some(cmd) =_cmdList.argv[0].as_ref() {
+        let command = cmd.as_str();
+        if BUILT_INS.contains(&command) {
+            return process_built_in_simple(_cmdList, &command);
+        } else {
+            return process_simple(_cmdList);
+        }
+    } else {
+        1
     }
 }
 
@@ -318,7 +465,7 @@ pub fn handle_pipe(_cmdList: &Arc<CMD>) -> i32 {
                         if fdw != 1 {
                             dup2_safe_pipe(fdw, STDOUT_FILENO);
                         }
-                        if let Err(e) = process_simple(&cmdVec[i]) {
+                        if let Err(e) = exec_simple(&cmdVec[i]) {
                             libc::_exit(e as i32);
                         }
                     }
@@ -353,7 +500,7 @@ pub fn handle_pipe(_cmdList: &Arc<CMD>) -> i32 {
             if fdin != 0 {
                 dup2_safe_pipe(fdin, STDIN_FILENO);
             }
-            if let Err(e) = process_simple(&cmdVec[cmdVec.len() - 1]) {
+            if let Err(e) = exec_simple(&cmdVec[cmdVec.len() - 1]) {
                 unsafe {libc::_exit(e as i32); }
             }
         }
