@@ -12,10 +12,6 @@ struct Entry {
     status: WaitStatus,
 }
 
-static NON_AND_OR : [u32; 2] = [
-    Type::SEP_BG as u32,
-    Type::SEP_END as u32,
-];
 
 // use crate::syscall::*;
 pub fn r_process(_cmdList: Arc<CMD>) -> u32 {
@@ -42,6 +38,12 @@ fn handle_any(_cmdList: &Arc<CMD>) -> u32 {
         },
         x if x == Type::SEP_BG as u32 => {
             handle_bg(&_cmdList) as u32
+        },
+        x if x == Type::SEP_END as u32 => {
+            handle_sep_end(&_cmdList) as u32
+        },
+        x if x == Type::SUBCMD as u32 => {
+            handle_subcmd(&_cmdList) as u32
         },
         _ => 0
     };
@@ -139,6 +141,24 @@ pub fn handle_simple(_cmdList: &Arc<CMD>) -> u32 {
                 libc::_exit(EXIT_FAILURE);
             }
         },
+    }
+}
+
+fn handle_sep_end(_cmdList: &Arc<CMD>) -> u32 {
+    let mut left_status = 0;
+    let mut right_status = 0;
+    if let Some(left) = _cmdList.left.as_ref() {
+        left_status = handle_any(left);
+    }
+    if let Some(right) = _cmdList.right.as_ref() {
+        right_status = handle_any(right);
+    }
+    if left_status != 0 {
+        return left_status;
+    } else if right_status != 0 {
+        return right_status;
+    } else {
+        return left_status;
     }
 }
 
@@ -466,4 +486,32 @@ fn handle_bg(_cmdList: &Arc<CMD>) -> u32 {
         }
     }
     0
+}
+
+fn handle_subcmd(_cmdList: &Arc<CMD>) -> u32 {
+    match unsafe { fork() } {
+        Ok(ForkResult::Parent { child, .. }) => {
+            let status = wait::waitpid(child, None).unwrap();
+            match status {
+                WaitStatus::Exited(_, code) => code as u32,
+                WaitStatus::Signaled(_, signal, _) => 128 + signal as u32,
+                // no errors!
+                _ => 0,
+            }
+        }
+        Ok(ForkResult::Child) => {
+            // 1. Handle Locals
+            let _ = handle_locals(&_cmdList);
+            // 3. Handle redirection (if necessary)
+            let _ = handle_redirection(&_cmdList);
+            if let Some(left) = _cmdList.left.as_ref() {
+                unsafe { libc::_exit(handle_any(left) as i32) };
+            } else {
+                unsafe { libc::_exit(EXIT_FAILURE);}
+            }
+        }
+        Err(_) => {
+            unsafe { libc::_exit(EXIT_FAILURE);}
+        }
+    }
 }
