@@ -1,15 +1,11 @@
-use std::env::current_dir;
 use std::ffi::{c_void, CString};
 use std::path::PathBuf;
-use std::sync::Mutex;
 use nix::errno::Errno;
 use std::os::raw::c_char;
 use crate::*;
 use libc::{ setenv, unlink, EXIT_FAILURE, O_APPEND, O_CREAT, O_RDONLY, O_TRUNC, O_WRONLY, STDIN_FILENO, STDOUT_FILENO};
 use nix::sys::wait::{self, WaitPidFlag, WaitStatus};
-use nix::unistd::{chdir, fork, execvp, pipe, Pid, ForkResult};
-
-use thread_local::ThreadLocal;
+use nix::unistd::{chdir, execvp, fork, getcwd, pipe, ForkResult, Pid};
 use std::cell::RefCell;
 
 thread_local! {
@@ -21,11 +17,6 @@ struct Entry {
     pid: Pid,
     status: WaitStatus,
 }
-
-struct Shell {
-    dir_stack: Vec<String>,
-}
-
 static BUILT_INS: [&str; 3] = [
     "pushd",
     "popd",
@@ -116,11 +107,16 @@ fn handle_locals(_cmdList: &Arc<CMD>) -> Result<(), Errno>  {
 
 fn cd_dir_name(dirName: &PathBuf) -> Result<(), Errno> {
     match chdir(dirName) {
-        Ok(_) => (),
+        Ok(_) => {
+            let name_cstr = string2CStr("PWD");
+            let val_cstr = string2CStr(dirName.to_str().unwrap());
+            unsafe { setenv(name_cstr.as_ptr(), val_cstr.as_ptr(), 1); }
+        },
         Err(_) => {
+            let err = std::ffi::CString::new("chdir failed").unwrap();
             unsafe {
-                libc::perror(std::ffi::CString::new("chdir failed").unwrap().as_ptr());
-                return Err(Errno::last());
+                libc::perror(err.as_ptr());
+                return Err(Errno::ENOENT);
             }
         }
     }
@@ -133,20 +129,28 @@ fn process_cd(_cmdList: &Arc<CMD>) -> u32 {
             let key = "HOME";
             match std::env::var(key) {
                 Ok(path) => {
+                    let path_buf = PathBuf::from(path);
                     // println!("path: {}", path);
-                    match chdir(PathBuf::from(path).as_path()) {
-                        Ok(_) => 0,
+                    match chdir(path_buf.as_path()) {
+                        Ok(_) => {
+                            let name_cstr = string2CStr("PWD");
+                            let val_cstr = string2CStr(path_buf.to_str().unwrap());
+                            unsafe { setenv(name_cstr.as_ptr(), val_cstr.as_ptr(), 1); }
+                            0
+                        },
                         Err(_) => {
+                            let err =std::ffi::CString::new("chdir failed").unwrap();
                             unsafe {
-                                libc::perror(std::ffi::CString::new("chdir failed").unwrap().as_ptr());
+                                libc::perror(err.as_ptr());
                             }
-                            return Errno::last() as u32;
+                            return Errno::ENOENT as u32;
                         }
                     }
                 },
                 Err(_) => {
+                    let err = std::ffi::CString::new("undefined").unwrap();
                     unsafe {
-                        libc::perror(std::ffi::CString::new("undefined").unwrap().as_ptr());
+                        libc::perror(err.as_ptr());
                     }
                     1
                 }
@@ -163,22 +167,57 @@ fn process_cd(_cmdList: &Arc<CMD>) -> u32 {
         },
         _ => {
             unsafe {
-                libc::perror(std::ffi::CString::new("too many argument").unwrap().as_ptr());
+                let err =std::ffi::CString::new("too many argument").unwrap();
+                libc::perror(err.as_ptr());
             }
             return 1;
         }
     }
 }
 
+fn print_dir_stack() -> Result<(), Errno> {
+    let newDir = match getcwd() {
+        Ok(path) => path,
+        Err(_) => {
+            let err = std::ffi::CString::new("failed to get cwd").unwrap();
+            unsafe {
+                libc::perror(err.as_ptr());
+            }
+            return Err(Errno::ENOENT);
+        }
+    };
+    print!("{} ", newDir.display());
+    DIR_STACK.with(|stack| {
+        let dir_stack = stack.borrow();
+        if dir_stack.len() == 1 {
+            print!("{}", dir_stack[0].display());
+        } else if dir_stack.len() > 1 {
+            for i in (1..dir_stack.len()).rev() {
+                print!("{} ", dir_stack[i].display());
+            }
+            print!("{}", dir_stack[0].display());
+        }
+    });
+    println!();
+    Ok(())
+}
+
 fn process_pushd(_cmdList: &Arc<CMD>) -> u32 {
     if _cmdList.argc != 2 {
+        eprintln!("usage: pushd <dirName>");
         return 1;
     } else {
         if let Some(dirName) = _cmdList.argv[1].as_ref() {
             // get current directory
-            let currDir = match current_dir() {
+            let currDir = match getcwd() {
                 Ok(path) => path,
-                Err(_) => return Errno::last() as u32
+                Err(_) => {
+                    let err = std::ffi::CString::new("failed to get cwd").unwrap();
+                    unsafe {
+                        libc::perror(err.as_ptr());
+                    }
+                    return Errno::ENOENT as u32
+                }
             };
             // push curr dir to dir stack
             DIR_STACK.with(|stack| {
@@ -189,13 +228,9 @@ fn process_pushd(_cmdList: &Arc<CMD>) -> u32 {
             if let Err(e) = cd_dir_name(&PathBuf::from(dirName)){
                 return e as u32;
             };
-            // print
-            println!("{}", currDir.display());
-            DIR_STACK.with(|stack| {
-                for dir in stack.borrow_mut().iter() {
-                    println!("{} ", dir.display());
-                }
-            });
+            if let Err(e) = print_dir_stack() {
+                return e as u32;
+            }
         } else {
             return Errno::EINVAL as u32;
         }
@@ -204,20 +239,30 @@ fn process_pushd(_cmdList: &Arc<CMD>) -> u32 {
 }
 
 fn process_popd(_cmdList: &Arc<CMD>) -> u32 {
-    if _cmdList.argc != 2 {
+    if _cmdList.argc != 1 {
+        eprintln!("usage: popd");
         return 1;
     } else {
          // pdir is None if stack is empty
         let pdir = DIR_STACK.with(|stack| {
             stack.borrow_mut().pop()
         });
+        if pdir == None {
+            eprintln!("stack empty");
+            return 1;
+        }
+        // cd to directory
         if let Some(dir) = pdir {
+            // println!("popped path: {}", dir.display());
             if let Err(e) = cd_dir_name(&dir) {
                 return e as u32;
             };
         }
-        0
+        if let Err(e) = print_dir_stack() {
+            return e as u32;
+        }
     }
+    0
 }
 
 fn exec_simple(_cmdList: &Arc<CMD>) -> Result<(), Errno> {
@@ -231,13 +276,30 @@ fn exec_simple(_cmdList: &Arc<CMD>) -> Result<(), Errno> {
      match execvp(&program, &args) {
          Ok(_) => (),
          Err(_) => {
+            let err = std::ffi::CString::new("Execvp failed").unwrap();
              unsafe { 
-                 libc::perror(std::ffi::CString::new("Execvp failed").unwrap().as_ptr());
-                 libc::_exit(Errno::last() as i32);
+                 libc::perror(err.as_ptr());
+                 libc::_exit(2);
              }
          }
      }
      Ok(())
+}
+
+fn exec_stage(_cmdList: &Arc<CMD>) -> Result<(), Errno> {
+    match _cmdList.node {
+        x if x == Type::SUBCMD as u32 => {
+            let status = handle_subcmd(_cmdList);
+            if status != 0 {
+                return Err(Errno::last());
+            }
+        },
+        x if x == Type::SIMPLE as u32 => {
+            return exec_simple(&_cmdList);
+        },
+        _ => (),
+    }
+    Ok(())
 }
 
 fn process_simple(_cmdList: &Arc<CMD>) -> u32 {
@@ -261,8 +323,9 @@ fn process_simple(_cmdList: &Arc<CMD>) -> u32 {
             }
         },
         Err(_) => {
+            let err = std::ffi::CString::new("Fork failed").unwrap();
             unsafe { 
-                libc::perror(std::ffi::CString::new("Fork failed").unwrap().as_ptr());
+                libc::perror(err.as_ptr());
                 libc::_exit(EXIT_FAILURE);
             }
         },
@@ -270,6 +333,12 @@ fn process_simple(_cmdList: &Arc<CMD>) -> u32 {
 }
 
 fn process_built_in_simple(_cmdList: &Arc<CMD>, cmd: &str) -> u32 {
+    if let Err(e) = handle_locals(&_cmdList) {
+        return e as u32;
+    };
+    if let Err(e) = handle_redirection(&_cmdList) {
+        return e as u32;
+    };
     match cmd {
         "cd" => return process_cd(_cmdList),
         "pushd" => return process_pushd(_cmdList),
@@ -361,20 +430,25 @@ pub fn handle_redirection(_cmdList: &Arc<CMD>) -> Result<(), Errno> {
                 (Some(fromFile), _) => {
                         let ifd = unsafe { libc::open(string2CStr(&fromFile).as_ptr(), O_RDONLY, 0o644)};
                         if ifd < 0 {
+                            let err = std::ffi::CString::new("open error").unwrap();
                             unsafe {
-                                libc::perror(std::ffi::CString::new("open error").unwrap().as_ptr());
+                                libc::perror(err.as_ptr());
                                 libc::_exit(EXIT_FAILURE);
                             }
                         }
                         let _ = dup2_safe_simple(ifd, STDIN_FILENO);
                 }
                 (_, Some(toFile)) => {
-                    // let ofd = open(string2CStr(&toFile).as_ptr(), )
-                    let flags = O_WRONLY | O_CREAT | O_TRUNC;
+                    let flags = if _cmdList.toType == Type::RED_OUT_APP as u32 {
+                        O_WRONLY | O_CREAT | O_APPEND
+                    } else {
+                        O_WRONLY | O_CREAT | O_TRUNC
+                    };                    
                     let ofd = unsafe { libc::open(string2CStr(&toFile).as_ptr(), flags as i32, 0o644)};
                     if ofd < 0 {
+                        let err = std::ffi::CString::new("open error").unwrap();
                         unsafe {
-                            libc::perror(std::ffi::CString::new("open error").unwrap().as_ptr());
+                            libc::perror(err.as_ptr());
                             libc::_exit(EXIT_FAILURE);
                         }
                     }
@@ -465,21 +539,23 @@ pub fn handle_pipe(_cmdList: &Arc<CMD>) -> i32 {
                         if fdw != 1 {
                             dup2_safe_pipe(fdw, STDOUT_FILENO);
                         }
-                        if let Err(e) = exec_simple(&cmdVec[i]) {
+                        if let Err(e) = exec_stage(&cmdVec[i]) {
                             libc::_exit(e as i32);
                         }
                     }
                 },
                 Err(_) => {
+                    let err = std::ffi::CString::new("Fork failed").unwrap();
                     unsafe { 
-                        libc::perror(std::ffi::CString::new("Fork failed").unwrap().as_ptr());
+                        libc::perror(err.as_ptr());
                         libc::_exit(EXIT_FAILURE);
                     }
                 }
             };
         } else {
+            let err = std::ffi::CString::new("Fork failed").unwrap();
             unsafe { 
-                libc::perror(std::ffi::CString::new("Fork failed").unwrap().as_ptr());
+                libc::perror(err.as_ptr());
                 libc::_exit(EXIT_FAILURE);
             }
         }
@@ -500,13 +576,14 @@ pub fn handle_pipe(_cmdList: &Arc<CMD>) -> i32 {
             if fdin != 0 {
                 dup2_safe_pipe(fdin, STDIN_FILENO);
             }
-            if let Err(e) = exec_simple(&cmdVec[cmdVec.len() - 1]) {
+            if let Err(e) = exec_stage(&cmdVec[cmdVec.len() - 1]) {
                 unsafe {libc::_exit(e as i32); }
             }
         }
         Err(_) => {
-            unsafe { 
-                libc::perror(std::ffi::CString::new("Fork failed").unwrap().as_ptr());
+            unsafe {
+                let err = std::ffi::CString::new("Fork failed").unwrap();
+                libc::perror(err.as_ptr());
                 libc::_exit(EXIT_FAILURE);
             }
         }
